@@ -37,7 +37,7 @@ func (peer *Peer) RequestConnectionCookie() {
 	c[0] = 24
 	c[1] = 0 ^ byte(sum)
 
-	peer.Send(c, len(c[:2]))
+	peer.sendData <- c[:2]
 }
 
 func (peer *Peer) SendConnectionCookie(data []byte) {
@@ -53,16 +53,15 @@ func (peer *Peer) SendConnectionCookie(data []byte) {
 
 	copy(c[:], data[:])
 
-	peer.Send(c, len(c[:4]))
+	peer.sendData <- c[:4]
 }
 
 func (peer *Peer) SendConnectionRequest() {
 
 	bs := bitstream.EmptyBitStream()
-	bs.Write([]byte{11}, 8, true)
+	bs.WriteByte(11)
 
-	GenerateBitStream(peer, bs)
-	peer.Send(bs.Data, len(bs.Data))
+	peer.chanBS <- *bs
 }
 
 func (peer *Peer) Start() {
@@ -74,11 +73,9 @@ func (peer *Peer) SendNIC(merged []byte) {
 	outBS := bitstream.EmptyBitStream()
 
 	outBS.WriteByte(IDNewIncommingConnection)
-	outBS.Write(merged, (4*8)+(2*8), true)
+	outBS.Write(merged, (4*8) + (2*8), true)
 
-	GenerateBitStream(peer, outBS)
-
-	peer.Send(outBS.Data, len(outBS.Data))
+	peer.chanBS <- *outBS
 }
 
 func (peer *Peer) OnConnectionRequestAccepted(data []byte, length int) {
@@ -86,7 +83,6 @@ func (peer *Peer) OnConnectionRequestAccepted(data []byte, length int) {
 	readBS := bitstream.NewBitStream(data, len(data))
 
 	recvExternalIDBytes, _ := readBS.ReadUint32()
-
 	recvPortBytes, port := readBS.ReadUint16()
 
 	_, playerID := readBS.ReadUint16()
@@ -94,14 +90,12 @@ func (peer *Peer) OnConnectionRequestAccepted(data []byte, length int) {
 	log.Println("playerID:", playerID, "port:", port)
 
 	merged := MergeBytes(recvExternalIDBytes, recvPortBytes, (4*8+2*8)>>3)
-
 	peer.SendNIC(merged)
 
 	uiSvrChallenge, _ := readBS.ReadBits(4*8, true)
-
 	d3 := binary.LittleEndian.Uint32(uiSvrChallenge)
 
-	peer.Join(d3, "Supergreenbeach")
+	peer.Join(d3)
 }
 
 func GenerateBitStream(peer *Peer, output *bitstream.BitStream) {
@@ -109,6 +103,7 @@ func GenerateBitStream(peer *Peer, output *bitstream.BitStream) {
 	bitsUsed := output.NumberOfBitsUsed
 	saveData := make([]byte, bitsUsed)
 	copy(saveData, output.Data[:])
+
 	output.NumberOfBitsUsed = 0
 
 	output.WriteBool0()
@@ -149,7 +144,6 @@ func (peer *Peer) ProcessPacket(dataBlock *DataBlock) {
 		if peer.authDone {
 			return
 		}
-		// shouldn't cause deadlock. authDone is true when authkey is sent.
 		peer.authKeySent <- true
 		peer.OnConnectionRequestAccepted(data, len(data))
 
@@ -158,8 +152,8 @@ func (peer *Peer) ProcessPacket(dataBlock *DataBlock) {
 		/*if !peer.authDone && peer.isAuthKeyPending {
 			peer.authKeySent <- false
 		}*/
-		log.Println("banned")
-		return
+		//log.Println("banned") // works
+		//return
 
 	case IDAuthKey:
 		if !peer.authDone {
@@ -167,23 +161,20 @@ func (peer *Peer) ProcessPacket(dataBlock *DataBlock) {
 		}
 
 	case IDRpc:
-		log.Println("rpc")
 		peer.HandleRPC(data, len(data))
 
 	case 227:
 		return
 	case 0:
 		return
+	default:
+
 	}
 }
 
-/*
-	20 25 221 0 59 33 224 0 0 32 232 236 45 204 140 45 140 218 234 162 232 37 102 38 70 198 38 200 168 167 8 134 198 8 104 198 166 134 102 230 102 70 198 134 232 103 8 198 7 8 198 71 39 38 232 167 8 134 7 6 136 134 166 134 6 32
-	20 25 221 0 59 33 224 0 0 32 232 236 45 204 140 45 140 218 234 162 232 37 102 38 70 198 38 200 168 167 8 134 198 8 104 198 166 134 102 230 102 70 198 134 232 103 8 198 7 8 198 71 39 38 232 167 8 134 7 6 136 134 166 134 6 32
-*/
-func (peer *Peer) Join(ui uint32, name string) {
+func (peer *Peer) Join(ui uint32) {
 
-	log.Println("Connected. Joining the game")
+	log.Println("Connected. Joining the game as", peer.Client.Name)
 
 	outcomingBS := bitstream.EmptyBitStream()
 
@@ -194,13 +185,13 @@ func (peer *Peer) Join(ui uint32, name string) {
 	authBsKey := []byte("12616EE8D60CF543732647C8F08F2997E8D084D5401")
 	authBsKeyLen := len(authBsKey)
 
-	botNameLen := len(name)
+	botNameLen := len(peer.Client.Name)
 
 	outcomingBS.WriteUint32(uint32(version), false)
 	outcomingBS.WriteByte(1)
 
 	outcomingBS.WriteByte(byte(botNameLen))
-	outcomingBS.Write([]byte(name), botNameLen*8, true)
+	outcomingBS.Write([]byte(peer.Client.Name), botNameLen*8, true)
 
 	outcomingBS.WriteUint32(challengeResponse, false)
 
@@ -221,7 +212,7 @@ func (peer *Peer) SendAuthKey(data []byte) {
 	authKey, found := FindAuthKey(authStr, int(authLen))
 
 	if !found {
-		log.Println("Auth Key Not Found")
+		log.Println("Failed to find authkey.")
 		return
 	}
 
@@ -231,19 +222,11 @@ func (peer *Peer) SendAuthKey(data []byte) {
 	bs.WriteByte(byte(len(authKey)))
 	bs.WriteAnArray([]byte(authKey), len(authKey))
 
-	GenerateBitStream(peer, bs)
+	peer.chanBS <- *bs
 	log.Println("Sending auth key...")
 
-	/*
-		I don't know why this should be done this way.
-		The same client written in C++ didn't need to send it several times.
-		My guess is that it simply doesn't properly get to the destination side on the first try (meaning server-app refuses to handle it)
-		Or perhaps something is blocking. But nothing is blocking when it sends the first RPC.
-
-		Until I find the source of the issue, let it remain this way.
-		It barely exceeds 15 attempts.
-	*/
-	do := func() { peer.Send(bs.Data, (bs.NumberOfBitsUsed>>3)+1) }
+	do := func() { peer.sendData <- bs.Data[:(bs.NumberOfBitsUsed>>3)+1] }
 
 	NewTask(do, &peer.authKeySent, &peer.authDone, 5, true)
+
 }

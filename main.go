@@ -6,7 +6,7 @@ import (
 
 
 func main() {
-	peer := InitPeer("0.0.0.0", 7777)
+	peer := InitPeer("127.0.0.1", 7777, "Nickname")
 	Init()
 	log.Println("Started")
 	go peer.Start()

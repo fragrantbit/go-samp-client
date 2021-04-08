@@ -31,9 +31,8 @@ func Encrypt(buf []byte, length int, port uint32, unk int) []byte {
 
 	if length >= 5 {
 		tmp := bufNocrc.Bytes()[len(data):length]
-		for _, v := range tmp {
-			data = append(data, v)
-		}
+		data = append(data, tmp...)
+		
 	}
 	return data
 }
