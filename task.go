@@ -20,9 +20,9 @@ func NewTask(callback func(), channel *chan bool,
 				return
 			// verify it.
 			case <-ticker.C:
-				i++
 				callback()
 				if slowing {
+					i++
 					ticker = time.NewTicker(ms + time.Duration(i) * time.Millisecond)
 				}
 			}	
